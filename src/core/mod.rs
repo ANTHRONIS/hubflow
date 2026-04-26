@@ -2,9 +2,12 @@
 //!
 //! All higher-level constructs are built on top of the primitives defined here.
 
+pub mod action;
 pub mod cell;
+pub mod class;
 pub mod event;
 pub mod inbox;
 pub mod knot;
 pub mod packet;
+pub mod registry;
 pub mod state;

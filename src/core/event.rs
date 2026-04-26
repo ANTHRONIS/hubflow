@@ -62,6 +62,21 @@ pub enum KnotEvent {
         packet: Packet,
         reason: DeadLetterReason,
     },
+
+    // ── State & execution ─────────────────────────────────────────────────────
+    /// Fired when an Object Knot's property changes.
+    ObjectStateChanged {
+        knot_id: Uuid,
+        property: String,
+        value: serde_json::Value,
+    },
+
+    /// Fired after an Action Knot's engine completes execution.
+    ActionExecuted {
+        knot_id: Uuid,
+        engine_name: String,
+        logs: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for KnotEvent {
@@ -87,6 +102,24 @@ impl std::fmt::Display for KnotEvent {
                     f,
                     "[{}→{}] dead-letter: {reason}",
                     packet.sender_id, packet.target_id
+                )
+            }
+            Self::ObjectStateChanged {
+                knot_id,
+                property,
+                value,
+            } => {
+                write!(f, "[{knot_id}] state changed: {property} = {value}")
+            }
+            Self::ActionExecuted {
+                knot_id,
+                engine_name,
+                logs,
+            } => {
+                write!(
+                    f,
+                    "[{knot_id}] action executed by {engine_name} ({} log lines)",
+                    logs.len()
                 )
             }
         }

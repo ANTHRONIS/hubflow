@@ -10,13 +10,26 @@
 //!
 //! The concrete types [`InMemoryStore`] and [`NoopPersistentStore`] are
 //! provided as default implementations. Replace [`NoopPersistentStore`] with
-//! a real backend (e.g. `sled`, SQLite, Redis) when persistence is required.
+//! a real backend (e.g. [`crate::persistence::HflowStore`]) when persistence
+//! is required.
 
 use serde_json::Value;
 use std::collections::HashMap;
+use std::pin::Pin;
 use uuid::Uuid;
 
-// ── State key ─────────────────────────────────────────────────────────────────
+// ── PinBoxFuture ──────────────────────────────────────────────────────────────
+
+/// Convenience alias for a heap-allocated, pinned, `Send`-able async future.
+///
+/// Used as the return type of [`PersistentStore`] methods to make the trait
+/// object-safe (compatible with `dyn PersistentStore`).
+///
+/// Without this alias the trait would rely on `impl Future` return types, which
+/// are not object-safe because their concrete size is unknown at compile time.
+pub type PinBoxFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+// ── StateKey ──────────────────────────────────────────────────────────────────
 
 /// Compound address key following the **ObjectID.PropertyID** pattern.
 ///
@@ -49,7 +62,7 @@ impl std::fmt::Display for StateKey {
     }
 }
 
-// ── Volatile store ────────────────────────────────────────────────────────────
+// ── VolatileStore ─────────────────────────────────────────────────────────────
 
 /// Synchronous, in-memory key-value store for volatile Knot state.
 ///
@@ -66,25 +79,47 @@ pub trait VolatileStore: Send + Sync {
     fn remove(&mut self, key: &StateKey) -> Option<Value>;
 }
 
-// ── Persistent store ──────────────────────────────────────────────────────────
+// ── PersistentStore ───────────────────────────────────────────────────────────
 
-/// Asynchronous persistent key-value store for durable Knot state.
+/// Object-safe async persistent key-value store.
 ///
 /// Implementations are expected to be backed by an external system such as
-/// SQLite, sled, Redis, or a cloud database. The trait uses `async fn`
-/// (stable since Rust 1.75).
+/// SQLite (see [`crate::persistence::HflowStore`]), sled, Redis, or a cloud
+/// database.
+///
+/// The trait uses [`PinBoxFuture`] instead of `impl Future` return types so
+/// that it remains **object-safe** — i.e. usable as `dyn PersistentStore`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use hubflow::core::state::{PersistentStore, StateKey};
+/// use uuid::Uuid;
+///
+/// async fn example(store: &dyn PersistentStore) {
+///     let key = StateKey::new(Uuid::new_v4(), "temperature");
+///     store.save(key.clone(), serde_json::json!(22.5)).await;
+///     let val = store.load(&key).await;
+/// }
+/// ```
 pub trait PersistentStore: Send + Sync {
     /// Loads the value at `key` from the persistent backend.
-    fn load(&self, key: &StateKey) -> impl std::future::Future<Output = Option<Value>> + Send;
+    ///
+    /// Returns `None` if the key does not exist.
+    fn load<'a>(&'a self, key: &'a StateKey) -> PinBoxFuture<'a, Option<Value>>;
 
     /// Saves `value` at `key` in the persistent backend.
-    fn save(&self, key: StateKey, value: Value) -> impl std::future::Future<Output = ()> + Send;
+    ///
+    /// Overwrites any existing value for the same key.
+    fn save<'a>(&'a self, key: StateKey, value: Value) -> PinBoxFuture<'a, ()>;
 
     /// Removes the value at `key` from the persistent backend.
-    fn delete(&self, key: &StateKey) -> impl std::future::Future<Output = ()> + Send;
+    ///
+    /// This is a no-op if the key does not exist.
+    fn delete<'a>(&'a self, key: &'a StateKey) -> PinBoxFuture<'a, ()>;
 }
 
-// ── In-memory volatile store ──────────────────────────────────────────────────
+// ── InMemoryStore ─────────────────────────────────────────────────────────────
 
 /// Default [`VolatileStore`] backed by a [`HashMap`].
 #[derive(Debug, Default)]
@@ -106,27 +141,26 @@ impl VolatileStore for InMemoryStore {
     }
 }
 
-// ── No-op persistent store ────────────────────────────────────────────────────
+// ── NoopPersistentStore ───────────────────────────────────────────────────────
 
 /// Placeholder [`PersistentStore`] that discards all operations.
 ///
-/// Replace with a real backend implementation (e.g. sled, SQLite, Redis)
-/// when durable state is required.
+/// Replace with a real backend implementation (e.g.
+/// [`crate::persistence::HflowStore`]) when durable state is required.
 #[derive(Debug, Default)]
 pub struct NoopPersistentStore;
 
 impl PersistentStore for NoopPersistentStore {
-    async fn load(&self, _key: &StateKey) -> Option<Value> {
-        // TODO: implement with a real persistent backend
-        None
+    fn load<'a>(&'a self, _key: &'a StateKey) -> PinBoxFuture<'a, Option<Value>> {
+        Box::pin(async { None })
     }
 
-    async fn save(&self, _key: StateKey, _value: Value) {
-        // TODO: implement with a real persistent backend
+    fn save<'a>(&'a self, _key: StateKey, _value: Value) -> PinBoxFuture<'a, ()> {
+        Box::pin(async {})
     }
 
-    async fn delete(&self, _key: &StateKey) {
-        // TODO: implement with a real persistent backend
+    fn delete<'a>(&'a self, _key: &'a StateKey) -> PinBoxFuture<'a, ()> {
+        Box::pin(async {})
     }
 }
 
@@ -181,10 +215,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn state_key_clone_and_eq() {
+        let k1 = key("alpha");
+        let k2 = k1.clone();
+        assert_eq!(k1, k2);
+    }
+
+    #[test]
+    fn state_key_hash_consistency() {
+        use std::collections::HashSet;
+        let k = key("beta");
+        let mut set = HashSet::new();
+        set.insert(k.clone());
+        // Inserting the same key again must not grow the set.
+        set.insert(k.clone());
+        assert_eq!(set.len(), 1);
+    }
+
     #[tokio::test]
-    async fn noop_persistent_store_returns_none() {
+    async fn noop_persistent_store_load_returns_none() {
         let store = NoopPersistentStore;
         let k = key("data");
         assert!(store.load(&k).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn noop_persistent_store_save_is_silent() {
+        let store = NoopPersistentStore;
+        let k = key("data");
+        // save must not panic or error.
+        store.save(k.clone(), json!({"x": 1})).await;
+        // value must still be absent afterwards.
+        assert!(store.load(&k).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn noop_persistent_store_delete_is_silent() {
+        let store = NoopPersistentStore;
+        let k = key("data");
+        // delete must not panic or error, even if key never existed.
+        store.delete(&k).await;
+    }
+
+    #[tokio::test]
+    async fn persistent_store_is_object_safe() {
+        // This test verifies at compile time that PersistentStore can be used
+        // as a trait object (dyn PersistentStore).
+        let store: Box<dyn PersistentStore> = Box::new(NoopPersistentStore);
+        let k = key("dyn_test");
+        assert!(store.load(&k).await.is_none());
+        store.save(k.clone(), json!(1)).await;
+        store.delete(&k).await;
     }
 }
