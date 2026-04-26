@@ -50,6 +50,11 @@ pub struct RegistryEntry {
 
     /// UUIDs of all directly registered child Knots.
     pub child_ids: Vec<Uuid>,
+
+    /// Canvas X coordinate (pixels) for the visual editor layout.
+    pub x: f32,
+    /// Canvas Y coordinate (pixels) for the visual editor layout.
+    pub y: f32,
 }
 
 // ── KnotRegistry ──────────────────────────────────────────────────────────────
@@ -123,6 +128,76 @@ impl KnotRegistry {
             .entry(knot_id)
             .or_default()
             .insert(property, value);
+    }
+
+    /// Updates the name and/or description of a registered Knot in-place.
+    ///
+    /// Returns `true` if the entry was found, `false` otherwise.
+    pub async fn update_meta(
+        &self,
+        id: &Uuid,
+        name: Option<String>,
+        description: Option<String>,
+    ) -> bool {
+        let mut guard = self.entries.write().await;
+        if let Some(entry) = guard.get_mut(id) {
+            if let Some(n) = name {
+                entry.meta.name = n;
+            }
+            if let Some(d) = description {
+                entry.meta.description = Some(d);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Updates the canvas position of a registered Knot in-place.
+    ///
+    /// Returns `true` if the entry was found, `false` otherwise.
+    pub async fn update_position(&self, id: &Uuid, x: f32, y: f32) -> bool {
+        let mut guard = self.entries.write().await;
+        if let Some(entry) = guard.get_mut(id) {
+            entry.x = x;
+            entry.y = y;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Appends `child_id` to the `child_ids` list of `parent_id`, if present.
+    pub async fn add_child_id(&self, parent_id: &Uuid, child_id: Uuid) {
+        let mut guard = self.entries.write().await;
+        if let Some(parent) = guard.get_mut(parent_id) {
+            if !parent.child_ids.contains(&child_id) {
+                parent.child_ids.push(child_id);
+            }
+        }
+    }
+
+    /// Removes `child_id` from the `child_ids` list of every registered Knot.
+    pub async fn remove_child_id_everywhere(&self, child_id: &Uuid) {
+        let mut guard = self.entries.write().await;
+        for entry in guard.values_mut() {
+            entry.child_ids.retain(|id| id != child_id);
+        }
+    }
+
+    /// Sets the `parent_id` and `level` of a registered Knot in-place.
+    ///
+    /// Used when a new parent-child link is drawn in the editor.
+    /// Returns `true` if the entry was found, `false` otherwise.
+    pub async fn set_parent(&self, id: &Uuid, parent_id: Uuid, level: u32) -> bool {
+        let mut guard = self.entries.write().await;
+        if let Some(entry) = guard.get_mut(id) {
+            entry.parent_id = Some(parent_id);
+            entry.level = level;
+            true
+        } else {
+            false
+        }
     }
 }
 

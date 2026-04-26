@@ -21,10 +21,14 @@
 //! | `get_graph`   | *(none)*                 | Request a topology snapshot    |
 
 use crate::api::types::{EventEnvelope, InjectPacketRequest, JsonRpcRequest, JsonRpcResponse};
+use crate::core::cell::CellMeta;
 use crate::core::event::KnotEvent;
 use crate::core::inbox::Inbox;
+use crate::core::knot::KnotRole;
 use crate::core::packet::Packet;
 use crate::core::registry::KnotRegistry;
+use crate::core::registry::RegistryEntry;
+use crate::persistence::HflowStore;
 use axum::{
     Json, Router,
     extract::{
@@ -35,12 +39,50 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::broadcast;
 use uuid::Uuid;
+
+// ── Request types ─────────────────────────────────────────────────────────────
+
+/// Request body for `POST /api/knot`.
+#[derive(Debug, Deserialize)]
+pub struct CreateKnotRequest {
+    pub name: String,
+    pub description: Option<String>,
+    pub role: String, // "Hub" | "Action" | "Object" | "Class"
+    pub parent_id: Option<Uuid>,
+    pub x: Option<f32>,
+    pub y: Option<f32>,
+}
+
+/// Request body for `PATCH /api/knot/:id`.
+#[derive(Debug, Deserialize)]
+pub struct UpdateKnotRequest {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub x: Option<f32>,
+    pub y: Option<f32>,
+}
+
+/// Request body for `POST /api/link`.
+///
+/// Creates a directed parent-child relationship: `source` becomes the parent
+/// of `target`. Both UUIDs must already exist in the registry.
+#[derive(Debug, Deserialize)]
+pub struct CreateLinkRequest {
+    /// UUID of the parent (source) Knot.
+    pub source_id: Uuid,
+    /// UUID of the child (target) Knot.
+    pub target_id: Uuid,
+    /// Optional semantic label for the link (defaults to `"edge"`).
+    pub link_type: Option<String>,
+}
 
 // ── AppState ──────────────────────────────────────────────────────────────────
 
@@ -64,6 +106,11 @@ pub struct AppState {
     /// Each WebSocket handler calls `.subscribe()` to obtain its own
     /// [`broadcast::Receiver`], allowing independent lag tracking per client.
     pub event_tx: broadcast::Sender<KnotEvent>,
+
+    /// Persistent SQLite store for topology and property data.
+    pub store: Arc<HflowStore>,
+    /// Monotonically increasing counter for generating local Knot IDs.
+    pub next_local_id: Arc<AtomicU64>,
 }
 
 // ── ApiServer ─────────────────────────────────────────────────────────────────
@@ -95,20 +142,26 @@ impl ApiServer {
     ///
     /// # Arguments
     ///
-    /// * `registry`   — Shared topology directory.
-    /// * `root_inbox` — Entry point for packet injection.
-    /// * `event_tx`   — Broadcast sender for the system event bus; each
-    ///                  WebSocket client subscribes independently.
+    /// * `registry`      — Shared topology directory.
+    /// * `root_inbox`    — Entry point for packet injection.
+    /// * `event_tx`      — Broadcast sender for the system event bus; each
+    ///                     WebSocket client subscribes independently.
+    /// * `store`         — Persistent SQLite store for topology data.
+    /// * `next_local_id` — Atomic counter for generating local Knot IDs.
     pub fn new(
         registry: Arc<KnotRegistry>,
         root_inbox: Arc<Inbox>,
         event_tx: broadcast::Sender<KnotEvent>,
+        store: Arc<HflowStore>,
+        next_local_id: Arc<AtomicU64>,
     ) -> Self {
         Self {
             state: AppState {
                 registry,
                 root_inbox,
                 event_tx,
+                store,
+                next_local_id,
             },
         }
     }
@@ -122,8 +175,15 @@ impl ApiServer {
 
         Router::new()
             .route("/api/graph", get(handle_graph))
-            .route("/api/knot/:id", get(handle_knot))
+            .route(
+                "/api/knot/:id",
+                get(handle_knot)
+                    .delete(handle_delete_knot)
+                    .patch(handle_update_knot),
+            )
             .route("/api/knot/:id/state", get(handle_knot_state))
+            .route("/api/knot", post(handle_create_knot))
+            .route("/api/link", post(handle_create_link))
             .route("/api/packet", post(handle_inject_packet))
             .route("/api/ws", get(handle_ws_upgrade))
             .with_state(self.state.clone())
@@ -467,5 +527,358 @@ pub fn event_to_envelope(event: &KnotEvent) -> EventEnvelope {
                 "logs":        logs,
             }),
         },
+
+        KnotEvent::KnotCreated {
+            knot_id,
+            name,
+            role,
+            level,
+            parent_id,
+            x,
+            y,
+        } => EventEnvelope {
+            event_type: "KnotCreated".into(),
+            payload: json!({
+                "knot_id":   knot_id,
+                "name":      name,
+                "role":      role,
+                "level":     level,
+                "parent_id": parent_id,
+                "x":         x,
+                "y":         y,
+            }),
+        },
+
+        KnotEvent::KnotDeleted { knot_id } => EventEnvelope {
+            event_type: "KnotDeleted".into(),
+            payload: json!({ "knot_id": knot_id }),
+        },
+
+        KnotEvent::KnotUpdated {
+            knot_id,
+            name,
+            description,
+            x,
+            y,
+        } => EventEnvelope {
+            event_type: "KnotUpdated".into(),
+            payload: json!({
+                "knot_id":     knot_id,
+                "name":        name,
+                "description": description,
+                "x":           x,
+                "y":           y,
+            }),
+        },
+
+        KnotEvent::GraphRefresh => EventEnvelope {
+            event_type: "GraphRefresh".into(),
+            payload: json!({}),
+        },
+    }
+}
+
+// ── POST /api/knot ─────────────────────────────────────────────────────────────
+
+/// `POST /api/knot` — create a new Knot definition in the topology.
+///
+/// The new Knot is persisted to SQLite and registered in the live registry.
+/// A [`KnotCreated`](KnotEvent::KnotCreated) event is broadcast to all WebSocket clients.
+async fn handle_create_knot(
+    State(state): State<AppState>,
+    Json(req): Json<CreateKnotRequest>,
+) -> Response {
+    // Validate role
+    let role_str = req.role.as_str();
+    if !matches!(role_str, "Hub" | "Action" | "Object" | "Class") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("unknown role: {}", req.role)})),
+        )
+            .into_response();
+    }
+
+    // Resolve parent and compute level
+    let parent_entry = match req.parent_id {
+        Some(pid) => match state.registry.get(&pid).await {
+            Some(e) => Some(e),
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"error": "parent_id not found"})),
+                )
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+    let level = parent_entry.as_ref().map(|e| e.level + 1).unwrap_or(0);
+
+    let knot_id = Uuid::new_v4();
+    let local_id = state.next_local_id.fetch_add(1, Ordering::Relaxed);
+    let x = req.x.unwrap_or(0.0);
+    let y = req.y.unwrap_or((level as f32) * 170.0);
+
+    // Build registry entry
+    let meta = match &req.description {
+        Some(d) => CellMeta::with_description(&req.name, d),
+        None => CellMeta::new(&req.name),
+    };
+    let entry = RegistryEntry {
+        id: knot_id,
+        local_id,
+        meta: meta.clone(),
+        role: match role_str {
+            "Hub" => KnotRole::Hub,
+            "Action" => KnotRole::Action,
+            "Object" => KnotRole::Object,
+            _ => KnotRole::Class,
+        },
+        level,
+        parent_id: req.parent_id,
+        class_id: None,
+        child_ids: vec![],
+        x,
+        y,
+    };
+
+    // Persist to SQLite
+    if let Err(e) = state
+        .store
+        .save_knot(
+            knot_id,
+            local_id,
+            &req.name,
+            req.description.as_deref(),
+            role_str,
+            level,
+            req.parent_id,
+            None,
+            x,
+            y,
+        )
+        .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    // Register in live registry
+    state.registry.upsert(entry.clone()).await;
+
+    // Update parent's child_ids
+    if let Some(pid) = req.parent_id {
+        state.registry.add_child_id(&pid, knot_id).await;
+    }
+
+    // Broadcast
+    let _ = state.event_tx.send(KnotEvent::KnotCreated {
+        knot_id,
+        name: req.name.clone(),
+        role: req.role.clone(),
+        level,
+        parent_id: req.parent_id,
+        x,
+        y,
+    });
+
+    (StatusCode::CREATED, Json(entry)).into_response()
+}
+
+// ── DELETE /api/knot/:id ───────────────────────────────────────────────────────
+
+/// `DELETE /api/knot/:id` — remove a Knot and all its associated data.
+async fn handle_delete_knot(State(state): State<AppState>, Path(id_str): Path<String>) -> Response {
+    let id = match Uuid::parse_str(&id_str) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid UUID"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Delete from SQLite (cascade: links + properties)
+    if let Err(e) = state.store.delete_knot_cascade(id).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    // Remove from live registry + clean up parent's child_ids
+    state.registry.remove(&id).await;
+    state.registry.remove_child_id_everywhere(&id).await;
+
+    // Broadcast
+    let _ = state.event_tx.send(KnotEvent::KnotDeleted { knot_id: id });
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
+// ── POST /api/link ─────────────────────────────────────────────────────────────
+
+/// `POST /api/link` — establish a parent-child relationship between two Knots.
+///
+/// Updates the `parent_id` of the target (child) Knot to point to the source
+/// (parent) Knot. Both Knots must already exist. Persists to SQLite and
+/// broadcasts a [`KnotUpdated`](KnotEvent::KnotUpdated) event so connected
+/// clients refresh their edge display.
+async fn handle_create_link(
+    State(state): State<AppState>,
+    Json(req): Json<CreateLinkRequest>,
+) -> Response {
+    // Validate both ends exist.
+    let parent_entry = match state.registry.get(&req.source_id).await {
+        Some(e) => e,
+        None => return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "source_id not found"})),
+        ).into_response(),
+    };
+    if state.registry.get(&req.target_id).await.is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "target_id not found"})),
+        ).into_response();
+    }
+
+    // Prevent self-loops.
+    if req.source_id == req.target_id {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "source and target must differ"})),
+        ).into_response();
+    }
+
+    let link_type = req.link_type.as_deref().unwrap_or("edge");
+    let link_id   = Uuid::new_v4();
+    let new_level = parent_entry.level + 1;
+
+    // Persist the link row.
+    if let Err(e) = state.store.save_link(link_id, req.source_id, req.target_id, link_type).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        ).into_response();
+    }
+
+    // Update the child Knot's parent_id and level in SQLite.
+    // We do this via a targeted UPDATE (reuse update_knot for meta, but we
+    // need to update parent_id — handled by re-saving the whole row).
+    if let Some(child) = state.registry.get(&req.target_id).await {
+        if let Err(e) = state.store.save_knot(
+            child.id,
+            child.local_id,
+            &child.meta.name,
+            child.meta.description.as_deref(),
+            &child.role.to_string(),
+            new_level,
+            Some(req.source_id),
+            child.class_id,
+            child.x,
+            child.y,
+        ).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            ).into_response();
+        }
+    }
+
+    // Update registry: set parent on child, register child under parent.
+    state.registry.set_parent(&req.target_id, req.source_id, new_level).await;
+    state.registry.add_child_id(&req.source_id, req.target_id).await;
+
+    // Broadcast so clients refresh their edge list.
+    let _ = state.event_tx.send(KnotEvent::GraphRefresh);
+
+    (StatusCode::CREATED, Json(json!({
+        "id":        link_id,
+        "source_id": req.source_id,
+        "target_id": req.target_id,
+        "link_type": link_type,
+    }))).into_response()
+}
+
+// ── PATCH /api/knot/:id ────────────────────────────────────────────────────────
+
+/// `PATCH /api/knot/:id` — update a Knot's metadata or canvas position.
+///
+/// Only the fields present in the JSON body are updated; absent fields are left
+/// unchanged. Coordinates (`x`, `y`) are only written if **both** are present.
+async fn handle_update_knot(
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+    Json(req): Json<UpdateKnotRequest>,
+) -> Response {
+    let id = match Uuid::parse_str(&id_str) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid UUID"})),
+            )
+                .into_response();
+        }
+    };
+
+    if state.registry.get(&id).await.is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "knot not found"})),
+        )
+            .into_response();
+    }
+
+    // Persist changes to SQLite
+    if let Err(e) = state
+        .store
+        .update_knot(
+            id,
+            req.name.clone(),
+            req.description.as_ref().map(|d| Some(d.clone())),
+            req.x,
+            req.y,
+        )
+        .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    // Update live registry
+    if req.name.is_some() || req.description.is_some() {
+        state
+            .registry
+            .update_meta(&id, req.name.clone(), req.description.clone())
+            .await;
+    }
+    if let (Some(x), Some(y)) = (req.x, req.y) {
+        state.registry.update_position(&id, x, y).await;
+    }
+
+    // Broadcast
+    let _ = state.event_tx.send(KnotEvent::KnotUpdated {
+        knot_id:     id,
+        name:        req.name.clone(),
+        description: req.description.clone(),
+        x:           req.x,
+        y:           req.y,
+    });
+
+    // Return updated entry
+    match state.registry.get(&id).await {
+        Some(entry) => Json(entry).into_response(),
+        None => StatusCode::OK.into_response(),
     }
 }

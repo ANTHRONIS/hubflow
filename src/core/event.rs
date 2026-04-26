@@ -77,6 +77,33 @@ pub enum KnotEvent {
         engine_name: String,
         logs: Vec<String>,
     },
+
+    // ── Graph mutations ───────────────────────────────────────────────────────
+    /// A new Knot has been added to the topology via the API.
+    KnotCreated {
+        knot_id: Uuid,
+        name: String,
+        role: String,
+        level: u32,
+        parent_id: Option<Uuid>,
+        x: f32,
+        y: f32,
+    },
+
+    /// A Knot has been removed from the topology via the API.
+    KnotDeleted { knot_id: Uuid },
+
+    /// A Knot's metadata or canvas position was updated via the API.
+    KnotUpdated {
+        knot_id:     Uuid,
+        name:        Option<String>,
+        description: Option<String>,
+        x:           Option<f32>,
+        y:           Option<f32>,
+    },
+
+    /// Clients should re-fetch `GET /api/graph` to sync the full topology.
+    GraphRefresh,
 }
 
 impl std::fmt::Display for KnotEvent {
@@ -122,6 +149,17 @@ impl std::fmt::Display for KnotEvent {
                     logs.len()
                 )
             }
+            Self::KnotCreated {
+                knot_id,
+                name,
+                role,
+                ..
+            } => write!(f, "[graph] knot created: {name} ({role}) id={knot_id}"),
+            Self::KnotDeleted { knot_id } => write!(f, "[graph] knot deleted: {knot_id}"),
+            Self::KnotUpdated { knot_id, name, description, .. } => {
+                write!(f, "[graph] knot updated: {knot_id} name={name:?} desc={description:?}")
+            }
+            Self::GraphRefresh => write!(f, "[graph] topology refresh requested"),
         }
     }
 }

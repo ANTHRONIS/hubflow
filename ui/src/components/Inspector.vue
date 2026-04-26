@@ -13,7 +13,15 @@
           <component :is="roleIcon" class="w-3.5 h-3.5" :class="roleIconColor" />
         </div>
         <div class="min-w-0">
-          <p class="text-sm font-semibold text-gray-100 truncate">{{ knot.meta.name }}</p>
+          <input
+            v-model="editName"
+            @blur="saveName"
+            @keyup.enter="saveName"
+            class="text-sm font-semibold text-gray-100 bg-transparent border-b border-transparent
+                   hover:border-gray-600 focus:border-indigo-500 outline-none w-full truncate
+                   transition-colors pb-0.5"
+            title="Click to rename"
+          />
           <p class="text-[10px] font-mono" :class="roleIconColor">{{ knot.role }}</p>
         </div>
       </div>
@@ -44,8 +52,17 @@
             @click="store.selectKnot(knot.parent_id)"
           >{{ knot.parent_id }}</button>
         </InfoRow>
-        <InfoRow v-if="knot.meta.description" label="Desc">
-          <span class="text-gray-400 text-xs">{{ knot.meta.description }}</span>
+        <InfoRow label="Desc">
+          <input
+            v-model="editDescription"
+            @blur="saveDescription"
+            @keyup.enter="saveDescription"
+            class="text-xs text-gray-300 bg-transparent border-b border-transparent
+                   hover:border-gray-600 focus:border-indigo-500 outline-none w-full
+                   transition-colors pb-0.5 placeholder-gray-600"
+            placeholder="Add a description…"
+            title="Click to edit description"
+          />
         </InfoRow>
       </div>
 
@@ -208,6 +225,19 @@
         </div>
       </template>
 
+      <!-- ══ Danger zone ══════════════════════════════════════════════════════════ -->
+      <div class="border-t border-gray-800 pt-3">
+        <button
+          @click="confirmDelete"
+          class="w-full py-2 text-xs font-medium rounded-lg border border-red-800/60
+                 text-red-400 hover:bg-red-950/40 hover:text-red-300
+                 transition-colors flex items-center justify-center gap-2"
+        >
+          <Trash2 class="w-3.5 h-3.5" />
+          Delete Knot
+        </button>
+      </div>
+
     </div><!-- end scroll body -->
   </aside>
 </template>
@@ -216,7 +246,7 @@
 import { computed, ref, watch } from 'vue'
 import {
   X, Database, RefreshCw, Zap, CheckCircle,
-  FileJson, Network, Box, Cpu,
+  FileJson, Network, Box, Cpu, Trash2,
 } from 'lucide-vue-next'
 import { useHubFlowStore, ROLE_COLOR } from '../stores/hubflow'
 
@@ -235,6 +265,29 @@ const InfoRow = {
 
 const store = useHubFlowStore()
 const knot  = computed(() => store.selectedKnot)
+
+// ── Editable name ─────────────────────────────────────────────────────────
+const editName        = ref('')
+const editDescription = ref('')
+
+// Sync editable fields whenever the selected knot changes
+watch(() => knot.value?.id, () => {
+  editName.value        = knot.value?.meta?.name ?? ''
+  editDescription.value = knot.value?.meta?.description ?? ''
+}, { immediate: true })
+
+async function saveName() {
+  if (!knot.value || !editName.value.trim()) return
+  if (editName.value.trim() === knot.value.meta.name) return
+  await store.updateKnot(knot.value.id, { name: editName.value.trim() })
+}
+
+async function saveDescription() {
+  if (!knot.value) return
+  const next = editDescription.value.trim()
+  if (next === (knot.value.meta.description ?? '')) return
+  await store.updateKnot(knot.value.id, { description: next || null })
+}
 
 // ── Role visual mapping ──────────────────────────────────────────────────
 const ROLE_ICON = { Hub: Network, Object: Box, Action: Cpu, Class: FileJson }
@@ -329,6 +382,13 @@ async function querySchema() {
     payload:  { op: 'get_schema' },
     priority: 128,
   })
+}
+
+// ── Delete ────────────────────────────────────────────────────────────────
+async function confirmDelete() {
+  if (!knot.value) return
+  if (!window.confirm(`Delete "${knot.value.meta.name}"? This cannot be undone.`)) return
+  await store.deleteKnot(knot.value.id)
 }
 </script>
 

@@ -40,9 +40,18 @@
     <!-- ── Main area ─────────────────────────────────────────────────────── -->
     <div class="flex flex-1 overflow-hidden relative">
 
-      <!-- Canvas fills the remaining space -->
+      <!-- Left: Node creation toolbar -->
+      <NodeToolbar
+        ref="toolbar"
+        :snap-grid="snapGrid"
+        @tidy="canvasRef?.tidyUp()"
+        @toggle-snap="toggleSnap"
+        @save="onSave"
+      />
+
+      <!-- Center: Canvas -->
       <div class="flex-1 relative min-w-0">
-        <Canvas />
+        <Canvas ref="canvasRef" @open-create="onOpenCreate" />
 
         <!-- Empty-state overlay (shown before any knots load) -->
         <Transition name="fade">
@@ -81,14 +90,38 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { Network, RefreshCw, ServerOff } from 'lucide-vue-next'
-import { useHubFlowStore }   from './stores/hubflow'
+import { useStorage } from '@vueuse/core'
+import { useHubFlowStore } from './stores/hubflow'
 import ConnectionStatus from './components/ConnectionStatus.vue'
 import Canvas           from './components/Canvas.vue'
 import Inspector        from './components/Inspector.vue'
+import NodeToolbar      from './components/NodeToolbar.vue'
 
 const store = useHubFlowStore()
+
+// ── Toolbar / canvas refs ─────────────────────────────────────────────────
+const toolbar   = ref(null)
+const canvasRef = ref(null)
+const snapGrid  = ref(false)
+
+function toggleSnap() {
+  snapGrid.value = !snapGrid.value
+  canvasRef.value?.toggleSnapGrid()
+}
+
+function onOpenCreate({ role, x, y }) {
+  toolbar.value?.openAt(role, x, y)
+}
+
+async function onSave() {
+  await store.fetchGraph()  // sync from server = confirm everything is saved
+  console.log('[HubFlow] Project synced from server (auto-save always active)')
+}
+
+// ── Viewport persistence ──────────────────────────────────────────────────
+const _viewport = useStorage('hubflow-viewport', { x: 0, y: 0, zoom: 1 })
 
 onMounted(async () => {
   await store.fetchGraph()   // get initial topology

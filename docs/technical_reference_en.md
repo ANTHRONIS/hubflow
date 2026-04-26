@@ -1,6 +1,6 @@
 # HubFlow Technical Reference
 
-> Version 0.2.0 — Rust Core
+> Version 0.3.0 — Persistent Interactive Editor
 
 ## Table of Contents
 1. [Overview](#1-overview)
@@ -12,7 +12,8 @@
 7. [State Management](#7-state-management)
 8. [The .hflow Database Schema](#8-the-hflow-database-schema)
 9. [Frontend API (WebSocket + REST)](#9-frontend-api-websocket--rest)
-10. [Glossary](#10-glossary)
+10. [Server Startup Lifecycle](#10-server-startup-lifecycle)
+11. [Glossary](#11-glossary)
 
 ---
 
@@ -259,9 +260,13 @@ CREATE TABLE knots (
     role        TEXT    NOT NULL,      -- "Hub" | "Action" | "Object" | "Class"
     level       INTEGER NOT NULL,
     parent_id   TEXT,                  -- NULL for root
-    class_id    TEXT                   -- NULL unless Object
+    class_id    TEXT,                  -- NULL unless Object
+    x           REAL    NOT NULL DEFAULT 0.0,  -- canvas X position (pixels)
+    y           REAL    NOT NULL DEFAULT 0.0   -- canvas Y position (pixels)
 );
 ```
+
+> **Migration note:** `x` and `y` are added via `ALTER TABLE` at open-time if the database was created by an older version. Existing databases are automatically upgraded.
 
 ### Table: `properties`
 
@@ -308,12 +313,76 @@ The `ApiServer` (powered by axum 0.7) exposes both a REST interface and a persis
 
 ### REST Endpoints
 
-| Method | Path                   | Response                               |
-|--------|------------------------|----------------------------------------|
-| `GET`  | `/api/graph`           | JSON array of all `RegistryEntry`      |
-| `GET`  | `/api/knot/:id`        | Single `RegistryEntry` or 404          |
-| `GET`  | `/api/knot/:id/state`  | Object property map or 404             |
-| `POST` | `/api/packet`          | `{"status": "queued"}`                 |
+| Method   | Path                   | Status  | Response / body                                |
+|----------|------------------------|---------|------------------------------------------------|
+| `GET`    | `/api/graph`           | 200     | JSON array of all `RegistryEntry`              |
+| `GET`    | `/api/knot/:id`        | 200/404 | Single `RegistryEntry` or error                |
+| `GET`    | `/api/knot/:id/state`  | 200/404 | Object property map or error                   |
+| `POST`   | `/api/knot`            | 201     | Created `RegistryEntry`                        |
+| `PATCH`  | `/api/knot/:id`        | 200     | Updated `RegistryEntry`                        |
+| `DELETE` | `/api/knot/:id`        | 204     | _(empty)_                                      |
+| `POST`   | `/api/link`            | 201     | Created link `{id, source_id, target_id, …}`   |
+| `POST`   | `/api/packet`          | 202     | `{"status": "queued"}`                         |
+
+### POST /api/knot — Request Body
+
+```json
+{
+  "name":        "MyHub",
+  "description": "optional",
+  "role":        "Hub",
+  "parent_id":   "<uuid-or-null>",
+  "x":           120.0,
+  "y":           340.0
+}
+```
+
+| Field         | Type     | Required | Notes                              |
+|---------------|----------|----------|------------------------------------|
+| `name`        | `string` | Yes      | Human-readable label               |
+| `role`        | `string` | Yes      | `"Hub"` \| `"Action"` \| `"Object"` \| `"Class"` |
+| `description` | `string` | No       |                                    |
+| `parent_id`   | `string` | No       | UUID of parent; `null` = root      |
+| `x`, `y`      | `float`  | No       | Canvas position (defaults: 0, level×170) |
+
+### PATCH /api/knot/:id — Request Body
+
+All fields are optional; only supplied fields are updated.
+
+```json
+{
+  "name":        "Renamed",
+  "description": "updated description",
+  "x":           200.0,
+  "y":           350.0
+}
+```
+
+> **Position update note:** `x` and `y` are only written to the database when **both** are supplied in the same request.
+
+### DELETE /api/knot/:id
+
+Removes the Knot and cascades: deletes all its associated `links` and `properties` rows. Broadcasts a `KnotDeleted` WebSocket event.
+
+### POST /api/link — Request Body
+
+Creates a directed parent-child relationship. `source_id` becomes the parent; `target_id` becomes its child.
+
+```json
+{
+  "source_id": "<parent-uuid>",
+  "target_id": "<child-uuid>",
+  "link_type": "edge"
+}
+```
+
+| Field       | Type     | Required | Notes                           |
+|-------------|----------|----------|---------------------------------|
+| `source_id` | `string` | Yes      | Parent Knot UUID                |
+| `target_id` | `string` | Yes      | Child Knot UUID                 |
+| `link_type` | `string` | No       | Defaults to `"edge"`            |
+
+Both UUIDs must already exist. Self-loops return `400 Bad Request`. Broadcasts a `GraphRefresh` WebSocket event.
 
 ### POST /api/packet — Request Body
 
@@ -352,7 +421,24 @@ The WebSocket endpoint provides a bidirectional channel. The server pushes struc
 }
 ```
 
-All event types mirror the `KnotEvent` enum documented in [Section 4](#4-routing-protocol). Clients should handle unknown `event_type` values gracefully to remain forward-compatible.
+**Event types pushed by the server:**
+
+| `event_type`            | Key payload fields                                         |
+|-------------------------|------------------------------------------------------------|
+| `Started`               | `knot_id`                                                  |
+| `Stopped`               | `knot_id`                                                  |
+| `PacketReceived`        | `packet` (full packet object)                              |
+| `PacketForwardedDown`   | `target_id`, `packet`                                      |
+| `PacketForwardedUp`     | `packet`                                                   |
+| `DeadLetter`            | `reason`, `packet`                                         |
+| `ObjectStateChanged`    | `knot_id`, `property`, `value`                             |
+| `ActionExecuted`        | `knot_id`, `engine_name`, `logs`                           |
+| `KnotCreated`           | `knot_id`, `name`, `role`, `level`, `parent_id`, `x`, `y` |
+| `KnotDeleted`           | `knot_id`                                                  |
+| `KnotUpdated`           | `knot_id`, `name?`, `description?`, `x?`, `y?`            |
+| `GraphRefresh`          | _(empty — client should re-fetch `/api/graph`)_            |
+
+Clients should handle unknown `event_type` values gracefully to remain forward-compatible.
 
 #### Client → Server: JSON-RPC 2.0
 
@@ -370,7 +456,33 @@ All event types mirror the `KnotEvent` enum documented in [Section 4](#4-routing
 
 ---
 
-## 10. Glossary
+## 10. Server Startup Lifecycle
+
+HubFlow uses a **first-run / restore** branching strategy at startup:
+
+```
+Open SQLite  →  load_knots()
+                     │
+         ┌───────────┴───────────────┐
+       empty                    has rows
+         │                           │
+   Seed demo topology        Restore from DB
+   (6 Knots with run-loops)  (RegistryEntry per row)
+   Save positions to DB       No run-loops needed
+   Sync positions → registry  next_local_id = max(local_id)+1
+         │                           │
+         └───────────┬───────────────┘
+               Start API server
+               Wait for Ctrl-C
+```
+
+**First run** creates the demo Solar System topology and seeds it to the `.hflow` file. **Subsequent runs** load every row from the `knots` table and hydrate the in-memory `KnotRegistry` with the stored positions, parent/child relationships, and metadata. This guarantees that layout changes made through the editor survive server restarts.
+
+The `next_local_id` counter is always initialised above the highest `local_id` already in the database, so new Knots created via `POST /api/knot` never collide with existing ones.
+
+---
+
+## 11. Glossary
 
 | Term              | Definition                                                                              |
 |-------------------|-----------------------------------------------------------------------------------------|

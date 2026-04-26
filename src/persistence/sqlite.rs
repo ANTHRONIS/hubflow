@@ -67,6 +67,10 @@ pub struct KnotRow {
     pub parent_id: Option<Uuid>,
     /// UUID of the class template, or `None` for non-Object Knots.
     pub class_id: Option<Uuid>,
+    /// Canvas X coordinate for the visual editor.
+    pub x: f32,
+    /// Canvas Y coordinate for the visual editor.
+    pub y: f32,
 }
 
 /// A hydrated row from the `links` table.
@@ -173,7 +177,19 @@ impl HflowStore {
                 link_type   TEXT    NOT NULL
             );
             ",
-        )
+        )?;
+
+        // Schema migrations: safe to run on existing databases.
+        let _ = conn.execute(
+            "ALTER TABLE knots ADD COLUMN x REAL NOT NULL DEFAULT 0.0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE knots ADD COLUMN y REAL NOT NULL DEFAULT 0.0",
+            [],
+        );
+
+        Ok(())
     }
 
     // ── Knot persistence ──────────────────────────────────────────────────────
@@ -189,6 +205,8 @@ impl HflowStore {
         level: u32,
         parent_id: Option<Uuid>,
         class_id: Option<Uuid>,
+        x: f32,
+        y: f32,
     ) -> Result<(), PersistenceError> {
         let id_s = id.to_string();
         let name_s = name.to_string();
@@ -202,8 +220,8 @@ impl HflowStore {
             let conn = conn.blocking_lock();
             conn.execute(
                 "INSERT OR REPLACE INTO knots
-                 (id, local_id, name, description, role, level, parent_id, class_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 (id, local_id, name, description, role, level, parent_id, class_id, x, y)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                 params![
                     id_s,
                     local_id as i64,
@@ -213,6 +231,8 @@ impl HflowStore {
                     level as i64,
                     parent_s,
                     class_s,
+                    x as f64,
+                    y as f64,
                 ],
             )?;
             Ok::<_, rusqlite::Error>(())
@@ -228,8 +248,8 @@ impl HflowStore {
         let rows = tokio::task::spawn_blocking(move || {
             let conn = conn.blocking_lock();
             let mut stmt = conn.prepare(
-                "SELECT id, local_id, name, description, role, level, parent_id, class_id
-                 FROM knots",
+                "SELECT id, local_id, name, description, role, level, parent_id, class_id, x, y
+                     FROM knots",
             )?;
 
             let rows: rusqlite::Result<Vec<KnotRow>> = stmt
@@ -247,6 +267,8 @@ impl HflowStore {
                         level: row.get::<_, i64>(5)? as u32,
                         parent_id: parent_str.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
                         class_id: class_str.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
+                        x: row.get::<_, f64>(8)? as f32,
+                        y: row.get::<_, f64>(9)? as f32,
                     })
                 })?
                 .collect();
@@ -274,7 +296,61 @@ impl HflowStore {
         Ok(())
     }
 
-    // ── Class persistence ─────────────────────────────────────────────────────
+    /// Updates the name, description, and/or canvas position of a Knot.
+    ///
+    /// Only the provided (non-`None`) fields are updated.
+    pub async fn update_knot(
+        &self,
+        id: Uuid,
+        name: Option<String>,
+        description: Option<Option<String>>, // Some(None) clears it
+        x: Option<f32>,
+        y: Option<f32>,
+    ) -> Result<(), PersistenceError> {
+        let id_s = id.to_string();
+        let conn = Arc::clone(&self.conn);
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.blocking_lock();
+            if let Some(n) = name {
+                conn.execute("UPDATE knots SET name = ?1 WHERE id = ?2", params![n, id_s])?;
+            }
+            if let Some(d) = description {
+                conn.execute(
+                    "UPDATE knots SET description = ?1 WHERE id = ?2",
+                    params![d, id_s],
+                )?;
+            }
+            if let (Some(xv), Some(yv)) = (x, y) {
+                conn.execute(
+                    "UPDATE knots SET x = ?1, y = ?2 WHERE id = ?3",
+                    params![xv as f64, yv as f64, id_s],
+                )?;
+            }
+            Ok::<_, rusqlite::Error>(())
+        })
+        .await??;
+        Ok(())
+    }
+
+    /// Deletes a Knot plus all its associated links and properties from the DB.
+    pub async fn delete_knot_cascade(&self, id: Uuid) -> Result<(), PersistenceError> {
+        let id_s = id.to_string();
+        let conn = Arc::clone(&self.conn);
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.blocking_lock();
+            conn.execute("DELETE FROM knots WHERE id = ?1", params![id_s])?;
+            conn.execute(
+                "DELETE FROM links WHERE source_id = ?1 OR target_id = ?1",
+                params![id_s],
+            )?;
+            conn.execute("DELETE FROM properties WHERE object_id = ?1", params![id_s])?;
+            Ok::<_, rusqlite::Error>(())
+        })
+        .await??;
+        Ok(())
+    }
+
+    // ── Class persistence ─────────────────────────────────────────────────────────
 
     /// Persists all property schemas for a [`ClassDefinition`].
     ///
@@ -593,7 +669,7 @@ mod tests {
         let s = store().await;
         let id = Uuid::new_v4();
 
-        s.save_knot(id, 1, "Hub", None, "Hub", 0, None, None)
+        s.save_knot(id, 1, "Hub", None, "Hub", 0, None, None, 0.0, 0.0)
             .await
             .unwrap();
 
@@ -624,6 +700,8 @@ mod tests {
             2,
             Some(parent),
             Some(class_id),
+            0.0,
+            0.0,
         )
         .await
         .unwrap();
@@ -639,7 +717,7 @@ mod tests {
         let s = store().await;
         let id = Uuid::new_v4();
 
-        s.save_knot(id, 1, "Original", None, "Hub", 0, None, None)
+        s.save_knot(id, 1, "Original", None, "Hub", 0, None, None, 0.0, 0.0)
             .await
             .unwrap();
         s.save_knot(
@@ -651,6 +729,8 @@ mod tests {
             0,
             None,
             None,
+            0.0,
+            0.0,
         )
         .await
         .unwrap();
@@ -666,7 +746,7 @@ mod tests {
         let s = store().await;
         let id = Uuid::new_v4();
 
-        s.save_knot(id, 1, "K", None, "Hub", 0, None, None)
+        s.save_knot(id, 1, "K", None, "Hub", 0, None, None, 0.0, 0.0)
             .await
             .unwrap();
         s.delete_knot(id).await.unwrap();
@@ -695,6 +775,8 @@ mod tests {
                 1,
                 None,
                 None,
+                0.0,
+                0.0,
             )
             .await
             .unwrap();

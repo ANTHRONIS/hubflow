@@ -980,6 +980,8 @@ impl Knot {
             parent_id: self.parent_id,
             class_id: self.class_id(),
             child_ids: self.children.keys().cloned().collect(),
+            x: 0.0,
+            y: 0.0,
         }
     }
 
