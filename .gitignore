@@ -1,1 +1,22 @@
+# --- Rust / Cargo ---
 /target
+Cargo.lock
+**/*.rs.bk
+
+# --- Node.js / Vue / Vite ---
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# --- IDEs / Editores ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# --- HubFlow Spezifisch ---
+*.hflow
+*.hflow-journal
+/tmp/
