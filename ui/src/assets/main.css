@@ -1,5 +1,6 @@
-/* Vue Flow base styles — must come before Tailwind */
+/* Vue Flow base + default theme — must come before Tailwind */
 @import '@vue-flow/core/dist/style.css';
+@import '@vue-flow/core/dist/theme-default.css';
 
 @tailwind base;
 @tailwind components;

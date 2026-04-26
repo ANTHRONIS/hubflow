@@ -8,8 +8,10 @@
       :nodes="store.vfNodes"
       :edges="store.vfEdges"
       :node-types="nodeTypes"
-      :edges-updatable="false"
-      :connect-on-click="false"
+      connection-mode="loose"
+      :nodes-connectable="true"
+      :nodes-draggable="true"
+      :edges-updatable="true"
       fit-view-on-init
       :min-zoom="0.15"
       :max-zoom="2.5"
@@ -22,6 +24,7 @@
       @pane-context-menu="onPaneContextMenu"
       @node-context-menu="onNodeContextMenu"
       @connect="onConnect"
+      @edge-update="onEdgeUpdate"
     >
       <Background variant="dots" :gap="28" :size="1.2" pattern-color="#1e293b" bg-color="#070c1a" />
       <Controls position="bottom-left" />
@@ -132,7 +135,16 @@ function onDrop(event) {
 
 // ── Connections (draw edge = create parent-child link) ────────────────────
 async function onConnect({ source, target }) {
-  await store.createLink(source, target)
+  if (source && target && source !== target) {
+    await store.createLink(source, target)
+  }
+}
+
+// ── Edge re-routing (drag an existing edge to a new target) ───────────────
+async function onEdgeUpdate({ edge, connection }) {
+  if (connection.source && connection.target && connection.source !== connection.target) {
+    await store.createLink(connection.source, connection.target)
+  }
 }
 
 // ── Context menu ──────────────────────────────────────────────────────────
@@ -222,6 +234,33 @@ defineExpose({ toggleSnapGrid: () => { snapGrid.value = !snapGrid.value }, tidyU
 
 <style>
 .hubflow-canvas { background: #070c1a; width: 100%; height: 100%; }
+
+/* Always show handles — not just on hover */
+.vue-flow__handle {
+  width:   12px !important;
+  height:  12px !important;
+  border-radius: 50% !important;
+  border: 2px solid currentColor !important;
+  opacity: 0.65;
+  transition: opacity 0.15s, transform 0.15s;
+}
+.vue-flow__handle:hover,
+.vue-flow__handle.connecting,
+.vue-flow__handle.valid {
+  opacity: 1;
+  transform: scale(1.35);
+}
+
+/* Connection line while dragging */
+.vue-flow__connection-path {
+  stroke: #6366f1 !important;
+  stroke-width: 2px !important;
+  stroke-dasharray: 6 3;
+  animation: connDash 0.5s linear infinite;
+}
+@keyframes connDash { to { stroke-dashoffset: -18; } }
+
+/* Selected node highlight */
 .vue-flow__node.selected > * {
   outline: 2px solid rgba(99,102,241,0.8);
   outline-offset: 3px;

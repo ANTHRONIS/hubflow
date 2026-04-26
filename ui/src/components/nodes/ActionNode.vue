@@ -11,7 +11,7 @@
     style="width:190px; min-height:76px"
   >
     <Handle type="target" :position="Position.Top"
-      class="!w-2.5 !h-2.5 !border-2 !border-amber-600 !bg-amber-400" />
+      class="!border-amber-500 !bg-amber-800" />
 
     <div class="flex items-center gap-2">
       <div class="w-8 h-8 rounded-lg bg-amber-900/70 border border-amber-500/40
@@ -36,7 +36,7 @@
                 pointer-events-none" />
 
     <Handle type="source" :position="Position.Bottom"
-      class="!w-2.5 !h-2.5 !border-2 !border-amber-600 !bg-amber-400" />
+      class="!border-amber-400 !bg-amber-600" />
   </div>
 </template>
 

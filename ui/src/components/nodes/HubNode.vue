@@ -10,9 +10,9 @@
     ]"
     style="width:210px; min-height:84px"
   >
-    <!-- Top connection handle -->
+    <!-- Top connection handle (target: receives connections) -->
     <Handle type="target" :position="Position.Top"
-      class="!w-2.5 !h-2.5 !border-2 !border-indigo-600 !bg-indigo-400" />
+      class="!border-indigo-500 !bg-indigo-800" />
 
     <!-- Icon row -->
     <div class="flex items-center gap-2">
@@ -42,9 +42,9 @@
          class="absolute inset-0 rounded-xl border-2 border-indigo-400 animate-ping opacity-60
                 pointer-events-none" />
 
-    <!-- Bottom handle -->
+    <!-- Bottom connection handle (source: starts connections) -->
     <Handle type="source" :position="Position.Bottom"
-      class="!w-2.5 !h-2.5 !border-2 !border-indigo-600 !bg-indigo-400" />
+      class="!border-indigo-400 !bg-indigo-600" />
   </div>
 </template>
 

@@ -14,7 +14,7 @@
         </div>
         <span class="text-base font-bold tracking-tight bg-gradient-to-r from-indigo-300 to-cyan-300
                      bg-clip-text text-transparent">HubFlow</span>
-        <span class="hidden sm:block text-xs text-gray-600 font-mono">Visual Editor v0.2</span>
+        <span class="hidden sm:block text-xs text-gray-600 font-mono">Visual Editor v0.3</span>
       </div>
 
       <!-- Right section -->
