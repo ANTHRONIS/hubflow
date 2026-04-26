@@ -1,74 +1,78 @@
 <template>
-  <!-- Collapsible left sidebar ──────────────────────────────────────────── -->
-  <aside
-    class="flex flex-col bg-gray-900 border-r border-gray-800 transition-all duration-200 flex-shrink-0"
-    :class="open ? 'w-48' : 'w-14'"
-  >
-    <!-- Toggle button -->
-    <button
-      @click="open = !open"
-      class="flex items-center justify-center h-10 w-full border-b border-gray-800
-             text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
-      :title="open ? 'Collapse toolbar' : 'Expand toolbar'"
-    >
-      <ChevronRight class="w-4 h-4 transition-transform" :class="open ? 'rotate-180' : ''" />
-    </button>
+  <div class="h-full min-h-0 flex flex-col overflow-hidden">
+    <aside class="flex flex-col flex-1 min-h-0 border-b border-slate-800/80">
+      <div class="px-3 py-2.5 border-b border-slate-800/60">
+        <p class="text-[10px] font-mono uppercase tracking-widest text-slate-500">
+          Draggable templates
+        </p>
+        <p class="text-xs text-slate-400 mt-0.5">Drag onto canvas to create a knot</p>
+      </div>
 
-    <!-- ── Create nodes ──────────────────────────────────────────────────── -->
-    <div class="flex flex-col gap-1 p-2 flex-1">
-      <p v-if="open" class="text-[9px] font-mono uppercase tracking-widest text-gray-600 px-1 pt-1 pb-0.5">
-        Create
-      </p>
+      <div class="flex-1 overflow-y-auto p-3 space-y-2.5">
+        <button
+          v-for="item in TEMPLATES"
+          :key="item.role"
+          type="button"
+          draggable="true"
+          class="w-full text-left rounded-xl border p-3 transition-all cursor-grab active:cursor-grabbing
+                 hover:ring-1 hover:ring-slate-600 flex items-start gap-3
+                 border-slate-700/80 bg-slate-800/40 hover:bg-slate-800/70 select-none
+                 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+          :class="item.cardClass"
+          :title="`Drag to create ${item.label}`"
+          @dragstart="onTemplateDragStart($event, item.role)"
+          @click="onCreate(item.role)"
+        >
+          <div
+            class="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 border"
+            :class="[item.iconBoxClass]"
+          >
+            <component :is="item.icon" class="w-5 h-5" />
+          </div>
+          <div class="min-w-0">
+            <p class="text-sm font-semibold text-slate-100 leading-tight">{{ item.label }}</p>
+            <p class="text-[11px] text-slate-500 mt-0.5">{{ item.hint }}</p>
+          </div>
+        </button>
+      </div>
+    </aside>
 
-      <ToolbarItem
-        v-for="item in NODE_TYPES"
-        :key="item.role"
-        :icon="item.icon"
-        :label="item.label"
-        :color="item.color"
-        :role="item.role"
-        :expanded="open"
-        @click="onCreate(item.role)"
-        @dragstart="onDragStart($event, item.role)"
-      />
+    <!-- Layout / save -->
+    <div class="p-3 border-t border-slate-800/80 space-y-2 bg-slate-900/30">
+      <p class="text-[10px] font-mono uppercase tracking-widest text-slate-500 px-0.5">Layout</p>
+      <div class="flex flex-col gap-1.5">
+        <button
+          type="button"
+          class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-slate-300 text-xs
+                 hover:bg-slate-800 border border-transparent hover:border-slate-700"
+          @click="emit('tidy')"
+        >
+          <LayoutDashboard class="w-3.5 h-3.5 text-slate-500" />
+          Tidy up
+        </button>
+        <button
+          type="button"
+          class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs
+                 border border-transparent hover:border-slate-700 hover:bg-slate-800"
+          :class="snapGrid ? 'text-indigo-300' : 'text-slate-300'"
+          @click="emit('toggle-snap')"
+        >
+          <Grid2x2 class="w-3.5 h-3.5" :class="snapGrid ? 'text-indigo-400' : 'text-slate-500'" />
+          Snap grid
+        </button>
+        <button
+          type="button"
+          class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-emerald-300/90 text-xs
+                 hover:bg-slate-800 border border-transparent hover:border-slate-700"
+          @click="emit('save')"
+        >
+          <Save class="w-3.5 h-3.5 text-emerald-500" />
+          Sync from server
+        </button>
+      </div>
     </div>
 
-    <!-- ── Layout actions ────────────────────────────────────────────────── -->
-    <div class="p-2 border-t border-gray-800 space-y-1">
-      <p v-if="open" class="text-[9px] font-mono uppercase tracking-widest text-gray-600 px-1 pb-0.5">
-        Layout
-      </p>
-
-      <ToolbarItem
-        icon="LayoutDashboard"
-        label="Tidy Up"
-        color="#9ca3af"
-        :expanded="open"
-        @click="emit('tidy')"
-      />
-      <ToolbarItem
-        icon="Grid2x2"
-        label="Snap Grid"
-        :color="snapGrid ? '#6366f1' : '#9ca3af'"
-        :expanded="open"
-        @click="emit('toggle-snap')"
-      />
-    </div>
-
-    <!-- ── Save ──────────────────────────────────────────────────────────── -->
-    <div class="p-2 border-t border-gray-800">
-      <ToolbarItem
-        icon="Save"
-        label="Save"
-        color="#10b981"
-        :expanded="open"
-        @click="emit('save')"
-      />
-    </div>
-  </aside>
-
-  <!-- ── "Create Knot" dialog ─────────────────────────────────────────── -->
-  <Teleport to="body">
+    <Teleport to="body">
     <Transition name="dialog-fade">
       <div
         v-if="dialog.open"
@@ -147,13 +151,14 @@
         </div>
       </div>
     </Transition>
-  </Teleport>
+    </Teleport>
+  </div>
 </template>
 
 <script setup>
 import { ref, computed, nextTick } from 'vue'
 import {
-  ChevronRight, Plus, Globe, Box, Cpu, FileJson,
+  Plus, Activity, Box, Zap, Layers,
   LayoutDashboard, Grid2x2, Save,
 } from 'lucide-vue-next'
 import { useHubFlowStore, ROLE_COLOR } from '../stores/hubflow'
@@ -165,48 +170,14 @@ const props = defineProps({
 const emit = defineEmits(['tidy', 'toggle-snap', 'save'])
 const store = useHubFlowStore()
 
-const open = ref(true)
-
-// ── Node type definitions ──────────────────────────────────────────────────
-const NODE_TYPES = [
-  { role: 'Hub',    label: 'Hub',    icon: 'Globe',    color: ROLE_COLOR.Hub    },
-  { role: 'Object', label: 'Object', icon: 'Box',      color: ROLE_COLOR.Object },
-  { role: 'Action', label: 'Action', icon: 'Cpu',      color: ROLE_COLOR.Action },
-  { role: 'Class',  label: 'Class',  icon: 'FileJson', color: ROLE_COLOR.Class  },
+/** Knot role strings as expected by the API: Hub | Object | Action | Class */
+const TEMPLATES = [
+  { role: 'Hub',    label: 'Hub',    hint: 'Root & routing', icon: Activity,  cardClass: 'ring-1 ring-indigo-500/20',  iconBoxClass: 'bg-indigo-950/60 border-indigo-500/30 text-indigo-300' },
+  { role: 'Object', label: 'Object', hint: 'Data instance',  icon: Box,       cardClass: 'ring-1 ring-emerald-500/20',  iconBoxClass: 'bg-emerald-950/60 border-emerald-500/30 text-emerald-300' },
+  { role: 'Action', label: 'Action', hint: 'Behaviour',      icon: Zap,      cardClass: 'ring-1 ring-amber-500/20',  iconBoxClass: 'bg-amber-950/60 border-amber-500/30 text-amber-300' },
+  { role: 'Class',  label: 'Class',  hint: 'Schema / type',  icon: Layers,   cardClass: 'ring-1 ring-cyan-500/20',  iconBoxClass: 'bg-cyan-950/60 border-cyan-500/30 text-cyan-300' },
 ]
 
-const ICON_MAP = { Globe, Box, Cpu, FileJson, LayoutDashboard, Grid2x2, Save }
-
-// ── Draggable toolbar item ─────────────────────────────────────────────────
-const ToolbarItem = {
-  props: ['icon', 'label', 'color', 'role', 'expanded'],
-  emits: ['click', 'dragstart'],
-  setup(props, { emit: e }) {
-    return { ICON_MAP, e }
-  },
-  template: `
-    <button
-      :draggable="!!role"
-      @click="e('click')"
-      @dragstart="e('dragstart', $event)"
-      class="flex items-center gap-2.5 w-full px-2 py-2 rounded-lg text-left
-             hover:bg-gray-800 transition-colors group"
-      :title="label"
-    >
-      <div
-        class="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
-        :style="{ background: color + '25', border: '1px solid ' + color + '50' }"
-      >
-        <component :is="ICON_MAP[icon]" class="w-3.5 h-3.5" :style="{ color }" />
-      </div>
-      <span v-if="expanded" class="text-xs font-medium text-gray-300 group-hover:text-gray-100 transition-colors">
-        {{ label }}
-      </span>
-    </button>
-  `,
-}
-
-// ── Dialog state ───────────────────────────────────────────────────────────
 const dialog = ref({ open: false, role: 'Hub', name: '', description: '', parentId: null, x: 0, y: 0 })
 const creating = ref(false)
 const nameInput = ref(null)
@@ -217,7 +188,9 @@ const parentName = computed(() => {
 })
 
 function roleColor(role) { return ROLE_COLOR[role] ?? '#6366f1' }
-function roleIconComponent(role) { return { Hub: Globe, Object: Box, Action: Cpu, Class: FileJson }[role] ?? Globe }
+function roleIconComponent(role) {
+  return { Hub: Activity, Object: Box, Action: Zap, Class: Layers }[role] ?? Activity
+}
 
 function onCreate(role) {
   dialog.value = {
@@ -225,7 +198,7 @@ function onCreate(role) {
     role,
     name: '',
     description: '',
-    parentId: store.selectedKnotId,  // default to currently selected knot
+    parentId: store.selectedKnotId,
     x: dialog.value.x,
     y: dialog.value.y,
   }
@@ -235,7 +208,7 @@ function onCreate(role) {
 async function confirmCreate() {
   if (!dialog.value.name.trim() || creating.value) return
   creating.value = true
-  await store.createKnot({
+  await store.addKnot({
     name:        dialog.value.name.trim(),
     description: dialog.value.description.trim() || null,
     role:        dialog.value.role,
@@ -247,13 +220,21 @@ async function confirmCreate() {
   dialog.value.open = false
 }
 
-// ── Drag start: store role in dataTransfer ─────────────────────────────────
-function onDragStart(event, role) {
-  event.dataTransfer.setData('hubflow/role', role)
+/**
+ * Vue Flow convention: payload type in application/vueflow (plus fallbacks).
+ */
+function onTemplateDragStart(event, role) {
+  const payload = String(role)
+  try {
+    event.dataTransfer.setData('application/vueflow', payload)
+  } catch {
+    // ignore
+  }
+  event.dataTransfer.setData('text/plain', payload)
+  event.dataTransfer.setData('hubflow/role', payload)
   event.dataTransfer.effectAllowed = 'copy'
 }
 
-// ── Exposed: open dialog at a specific canvas position ─────────────────────
 function openAt(role, x, y) {
   dialog.value = {
     open: true,

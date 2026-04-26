@@ -200,16 +200,15 @@ export const useHubFlowStore = defineStore("hubflow", () => {
   }
 
   /**
-   * Create a new Knot via POST /api/knot.
-   * Immediately adds the entry to the local `knots` array (optimistic update);
-   * corrects it when the confirmed entry arrives via WS KnotCreated event.
+   * Create a new Knot via POST /api/knot (primary API for the editor).
+   * Merges the server `RegistryEntry` into local state on success so the node appears immediately.
    */
-  async function createKnot({
+  async function addKnot({
     name,
     role,
-    parentId = null,
     x = 0,
     y = 0,
+    parentId = null,
     description = null,
   }) {
     const body = { name, role, parent_id: parentId, x, y };
@@ -222,15 +221,28 @@ export const useHubFlowStore = defineStore("hubflow", () => {
       });
       if (!r.ok) throw new Error(await r.text());
       const entry = await r.json();
-      // Merge into local knots (WS event may arrive first)
       if (!knots.value.find((k) => k.id === entry.id)) {
         knots.value = [...knots.value, entry];
       }
       return entry;
     } catch (e) {
-      console.warn("[HubFlow] createKnot:", e.message);
+      console.warn("[HubFlow] addKnot:", e.message);
       return null;
     }
+  }
+
+  /**
+   * Same as {@link addKnot}; kept for existing call sites (context menu, clone, etc.).
+   */
+  async function createKnot({
+    name,
+    role,
+    parentId = null,
+    x = 0,
+    y = 0,
+    description = null,
+  }) {
+    return addKnot({ name, role, x, y, parentId, description });
   }
 
   /**
@@ -521,6 +533,7 @@ export const useHubFlowStore = defineStore("hubflow", () => {
     fetchGraph,
     fetchKnotState,
     injectPacket,
+    addKnot,
     createKnot,
     createLink,
     deleteKnot,

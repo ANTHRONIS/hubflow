@@ -37,20 +37,18 @@
       </div>
     </header>
 
-    <!-- ── Main area ─────────────────────────────────────────────────────── -->
-    <div class="flex flex-1 overflow-hidden relative">
-
-      <!-- Left: Node creation toolbar -->
+    <!-- ── Main: horizontal flex — toolbar (left) + canvas (right) + inspector ── -->
+    <div class="flex flex-1 min-h-0 overflow-hidden">
       <NodeToolbar
         ref="toolbar"
+        class="w-64 flex-shrink-0 border-r border-slate-800 bg-slate-900/50"
         :snap-grid="snapGrid"
         @tidy="canvasRef?.tidyUp()"
         @toggle-snap="toggleSnap"
         @save="onSave"
       />
 
-      <!-- Center: Canvas -->
-      <div class="flex-1 relative min-w-0">
+      <div class="flex-1 relative min-w-0 min-h-0">
         <Canvas ref="canvasRef" @open-create="onOpenCreate" />
 
         <!-- Empty-state overlay (shown before any knots load) -->

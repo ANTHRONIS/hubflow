@@ -1,6 +1,6 @@
 <template>
   <div
-    class="w-full h-full relative"
+    class="w-full h-full relative min-h-0"
     @dragover.prevent="onDragOver"
     @drop.prevent="onDrop"
   >
@@ -18,6 +18,8 @@
       :snap-to-grid="snapGrid"
       :snap-grid="[20, 20]"
       class="hubflow-canvas"
+      @dragover.prevent="onDragOver"
+      @drop.prevent="onDrop"
       @node-click="onNodeClick"
       @node-drag-stop="onNodeDragStop"
       @pane-click="onPaneClick"
@@ -113,23 +115,30 @@ function onNodeDragStop({ node }) {
   }, 400)
 }
 
-// ── Drag-and-drop from NodeToolbar ────────────────────────────────────────
+// ── Drag-and-drop from NodeToolbar (application/vueflow + fallbacks) ───────
 function onDragOver(event) {
   event.dataTransfer.dropEffect = 'copy'
 }
 
+// Wrapper + VueFlow both listen; de-dupe identical drops in one gesture.
+let _lastDropKey = null
 function onDrop(event) {
-  const role = event.dataTransfer.getData('hubflow/role')
-  if (!role) return
-  const pos = screenToFlowCoordinate({ x: event.clientX, y: event.clientY })
-  const parentId = store.selectedKnotId
+  const type =
+    event.dataTransfer.getData('application/vueflow') ||
+    event.dataTransfer.getData('text/plain') ||
+    event.dataTransfer.getData('hubflow/role')
+  if (!type) return
+  const key = `${type}@${event.clientX},${event.clientY}`
+  if (key === _lastDropKey) return
+  _lastDropKey = key
+  queueMicrotask(() => { _lastDropKey = null })
 
-  store.createKnot({
-    role,
-    name:     `New ${role}`,
-    parentId,
-    x:        Math.round(pos.x),
-    y:        Math.round(pos.y),
+  const pos = screenToFlowCoordinate({ x: event.clientX, y: event.clientY })
+  store.addKnot({
+    name: `New ${type}`,
+    role: type,
+    x: Math.round(pos.x),
+    y: Math.round(pos.y),
   })
 }
 
